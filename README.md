@@ -384,8 +384,9 @@ ProxyBridge устанавливается как macOS-приложение с 
 
     <key>ProgramArguments</key>
     <array>
-        <string>/bin/bash</string>
-        <string>/Users/&lt;USERNAME&gt;/launch_localshadowsocks.sh</string>
+        <string>/opt/homebrew/bin/ss-local</string>
+        <string>-c</string>
+        <string>/Users/USERNAME/.config/ss-local/config.json</string>
     </array>
 
     <key>RunAtLoad</key>
