@@ -152,6 +152,133 @@ sudo journalctl -u shadowsocks-libev -n 50 --no-pager
 
 Предупреждение о недостатке энтропии должно исчезнуть. Если в конкретной версии Ubuntu служба называется иначе или пакет недоступен, ориентируйся на фактическое имя пакета и службы в этой системе.
 
+### 1.8. Настроить промежуточный VPS через SSH-туннель
+
+Промежуточный VPS принимает соединение от клиента на TCP-порту 80 и передаёт его через постоянный SSH-туннель на сервер в Стокгольме:
+
+```text
+Mac (ss-local + v2ray-plugin)
+  → промежуточный VPS:80
+  → SSH-туннель
+  → Stockholm:127.0.0.1:80
+```
+
+В этой схеме сервер Shadowsocks в Стокгольме менять не нужно. SSH-туннель переносит TCP, поэтому он подходит для `v2ray-plugin` в режиме WebSocket. UDP через него не передаётся.
+
+#### Подготовить SSH-доступ со промежуточного VPS
+
+Подключись к промежуточному VPS и создай отдельный ключ для туннеля:
+
+```bash
+sudo install -d -m 700 /root/.ssh
+sudo ssh-keygen -t ed25519 -f /root/.ssh/stockholm_relay -N ""
+```
+
+Добавь содержимое публичного ключа:
+
+```bash
+sudo cat /root/.ssh/stockholm_relay.pub
+```
+
+в файл `~ubuntu/.ssh/authorized_keys` на сервере в Стокгольме. Используй консоль провайдера или уже настроенный SSH-доступ. Приватный ключ `/root/.ssh/stockholm_relay` никому не передавай.
+
+На промежуточном VPS проверь соединение и подтверди fingerprint SSH-сервера Стокгольма при первом подключении:
+
+```bash
+sudo ssh -i /root/.ssh/stockholm_relay \
+  ubuntu@<STOCKHOLM_IP>
+```
+
+Выйди из SSH после проверки:
+
+```bash
+exit
+```
+
+Пользователь `ubuntu` должен иметь SSH-доступ, а сервер Shadowsocks с `v2ray-plugin` — принимать соединения на `127.0.0.1:80` в Стокгольме.
+
+#### Создать systemd-службу туннеля
+
+На промежуточном VPS создай unit-файл:
+
+```bash
+sudo tee /etc/systemd/system/ss-tunnel.service >/dev/null <<'EOF_SERVICE'
+[Unit]
+Description=SSH Tunnel to Stockholm Shadowsocks
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=root
+ExecStart=/usr/bin/ssh -i /root/.ssh/stockholm_relay -N -g -L 0.0.0.0:80:127.0.0.1:80 -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 ubuntu@<STOCKHOLM_IP>
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF_SERVICE
+```
+
+Замени `<STOCKHOLM_IP>` на публичный IPv4 сервера в Стокгольме, затем включи и запусти службу:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now ss-tunnel
+```
+
+Проверь службу и локальный слушающий порт:
+
+```bash
+sudo systemctl status ss-tunnel --no-pager
+sudo ss -lntp | grep ':80'
+```
+
+Если служба не запустилась, посмотри журнал:
+
+```bash
+sudo journalctl -u ss-tunnel -n 50 --no-pager
+```
+
+#### Открыть доступ к промежуточному VPS
+
+В firewall промежуточного VPS и в панели его провайдера разреши входящий **TCP-порт 80**. Если у тебя есть статический IP, ограничь правило этим адресом. Порт 80 на промежуточном VPS доступен извне, поэтому не оставляй его открытым без необходимости.
+
+На сервере в Стокгольме SSH должен принимать подключения с промежуточного VPS. Shadowsocks-порт 80 не нужно открывать иначе, чем он был открыт для прежней прямой схемы.
+
+#### Обновить конфигурацию Mac
+
+В `~/.config/ss-client/config.json` измени только поле `server` — укажи публичный IP промежуточного VPS:
+
+```json
+{
+  "server": "<RELAY_VPS_IP>",
+  "server_port": 80,
+  "password": "<PASSWORD>",
+  "timeout": 60,
+  "method": "aes-256-gcm",
+  "fast_open": true,
+  "local_address": "127.0.0.1",
+  "local_port": 1080,
+  "plugin": "v2ray-plugin"
+}
+```
+
+Замени `<RELAY_VPS_IP>` и `<PASSWORD>` на свои значения. Не добавляй пароль в публикуемую конфигурацию. Остальные параметры должны совпадать с сервером в Стокгольме.
+
+После перезапуска `ss-local` проверь локальный SOCKS5:
+
+```bash
+curl --socks5-hostname 127.0.0.1:1080 \
+  https://1.1.1.1/cdn-cgi/trace
+```
+
+Проверить состояние туннеля на промежуточном VPS можно командами:
+
+```bash
+sudo systemctl status ss-tunnel --no-pager
+sudo journalctl -u ss-tunnel -n 50 --no-pager
+```
+
 ---
 
 ## 2. Клиент macOS
